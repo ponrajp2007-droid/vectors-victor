@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HNX26PSI04 — IEEE Fraud Intelligence Engine</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.3/papaparse.min.js"></script>
+<style>
+  #network-graph { height: 560px; background:#0f172a; border-radius:14px; }
+  .drop-zone.drag { border-color:#60a5fa; background:#172554; }
+  .scrollbar::-webkit-scrollbar { height:8px; width:8px; }
+  .scrollbar::-webkit-scrollbar-thumb { background:#475569; border-radius:8px; }
+</style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen">
+<header class="bg-slate-900 border-b border-slate-800 sticky top-0 z-20">
+  <div class="max-w-7xl mx-auto p-4 flex flex-col lg:flex-row justify-between gap-4">
+    <div>
+      <h1 class="text-xl font-bold text-blue-400">HNX26PSI04: IEEE-CIS Financial Fraud Intelligence</h1>
+      <p class="text-xs text-slate-400 mt-1">Upload IEEE-CIS transaction/identity data and investigate transaction, account, device, IP and email-domain risk.</p>
+    </div>
+    <div class="flex gap-2">
+      <button id="demoBtn" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-semibold">Load Demo</button>
+      <button id="reanalyzeBtn" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold">Re-analyze</button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto p-5 space-y-5">
+  <section class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+    <div class="flex flex-col md:flex-row justify-between gap-4">
+      <div>
+        <h2 class="font-semibold">1. Load IEEE-CIS data</h2>
+        <p class="text-xs text-slate-400 mt-1">Supports CSV files. You can upload <b>train_transaction.csv</b>, <b>train_identity.csv</b>, or a prepared merged CSV.</p>
+      </div>
+      <div class="text-xs text-slate-400">Privacy: files are processed locally in your browser.</div>
+    </div>
+    <div id="dropZone" class="drop-zone mt-4 border-2 border-dashed border-slate-700 rounded-xl p-8 text-center transition">
+      <input id="fileInput" type="file" accept=".csv,text/csv" multiple class="hidden">
+      <button onclick="document.getElementById('fileInput').click()" class="bg-blue-600 hover:bg-blue-500 px-5 py-2 rounded-lg text-sm font-semibold">Choose CSV file(s)</button>
+      <p class="text-xs text-slate-500 mt-3">or drag & drop CSV files here</p>
+      <p id="fileStatus" class="text-xs text-slate-400 mt-2">No dataset loaded.</p>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+    <div class="metric"><span>Transactions</span><b id="totalTx">0</b><small>loaded records</small></div>
+    <div class="metric"><span>Fraud Labels</span><b id="knownFraud">0</b><small>known isFraud=1</small></div>
+    <div class="metric"><span>Flagged</span><b id="flagged">0</b><small>risk ≥ 70</small></div>
+    <div class="metric"><span>Fraud Ratio</span><b id="fraudRatio">0%</b><small>known fraud / transactions</small></div>
+    <div class="metric"><span>Risk Rings</span><b id="rings">0</b><small>shared-entity clusters</small></div>
+  </section>
+
+  <section class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+    <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+      <div>
+        <h2 class="font-semibold">2. Risk controls</h2>
+        <p class="text-xs text-slate-400">Heuristic explainable scoring. It is not a trained production ML model.</p>
+      </div>
+      <div class="flex flex-wrap gap-3 text-xs">
+        <label>Flag threshold <input id="threshold" type="number" min="1" max="99" value="70" class="w-16 bg-slate-800 border border-slate-700 rounded px-2 py-1 ml-1"></label>
+        <label>Shared entity weight <input id="sharedWeight" type="number" min="0" max="50" value="25" class="w-16 bg-slate-800 border border-slate-700 rounded px-2 py-1 ml-1"></label>
+        <label>Amount weight <input id="amountWeight" type="number" min="0" max="40" value="15" class="w-16 bg-slate-800 border border-slate-700 rounded px-2 py-1 ml-1"></label>
+      </div>
+    </div>
+    <div id="schema" class="mt-4 text-xs text-slate-400">Schema mapping will appear after upload.</div>
+  </section>
+
+  <section class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+    <div class="flex flex-col sm:flex-row justify-between gap-2 mb-4">
+      <div>
+        <h2 class="text-lg font-semibold">Heterogeneous Connection Graph</h2>
+        <p class="text-xs text-slate-400">Cards/accounts connect to shared devices, IPs and email domains.</p>
+      </div>
+      <div class="text-xs text-slate-400">Red = high-risk · Amber = shared device · Blue = shared network/domain</div>
+    </div>
+    <div id="network-graph"></div>
+  </section>
+
+  <section class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+    <div class="flex flex-col md:flex-row justify-between gap-3 mb-4">
+      <div>
+        <h2 class="text-lg font-semibold">Risk Scoring & Decision Output</h2>
+        <p class="text-xs text-slate-400">Sorted by risk score. Use search to investigate individual transactions.</p>
+      </div>
+      <input id="search" placeholder="Search transaction, card, device, IP, domain..." class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs w-full md:w-80">
+    </div>
+    <div class="overflow-auto scrollbar max-h-[620px]">
+      <table class="w-full text-left text-sm">
+        <thead class="sticky top-0 bg-slate-950 text-slate-400 text-xs uppercase">
+          <tr>
+            <th class="p-3">Transaction</th><th class="p-3">Account/Card</th><th class="p-3">Amount</th>
+            <th class="p-3">Device</th><th class="p-3">IP</th><th class="p-3">Email</th>
+            <th class="p-3">Risk</th><th class="p-3">Reason</th><th class="p-3">Action</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody" class="divide-y divide-slate-800"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<style>
+.metric{background:#0f172a;border:1px solid #1e293b;padding:16px;border-radius:14px}
+.metric span{display:block;font-size:11px;text-transform:uppercase;color:#94a3b8}
+.metric b{display:block;font-size:25px;margin-top:4px;color:#60a5fa}
+.metric small{color:#64748b;font-size:11px}
+</style>
+
+<script>
+let rows = [], processed = [], networkInstance = null;
+let schema = {};
+
+const aliases = {
+  tx: ['TransactionID','transactionid','TransactionId'],
+  card: ['card1','card2','card3','card4'],
+  amount: ['TransactionAmt','transactionamt','amount'],
+  device: ['DeviceInfo','deviceinfo','device'],
+  ip: ['addr1','addr2','ip','IPAddress','ipaddress'],
+  email: ['P_emaildomain','P_emaildomain_2','emaildomain','email'],
+  fraud: ['isFraud','isfraud','fraud','label']
+};
+
+function pick(headers, list) {
+  const lower = Object.fromEntries(headers.map(h => [String(h).toLowerCase(), h]));
+  for (const x of list) if (lower[x.toLowerCase()]) return lower[x.toLowerCase()];
+  return null;
+}
+
+function inferSchema(data) {
+  const h = data.length ? Object.keys(data[0]) : [];
+  schema = {};
+  for (const k in aliases) schema[k] = pick(h, aliases[k]);
+  document.getElementById('schema').innerHTML =
+    `<b>Detected:</b> Transaction=${schema.tx||'—'} · Card=${schema.card||'—'} · Amount=${schema.amount||'—'} · Device=${schema.device||'—'} · IP=${schema.ip||'—'} · Email=${schema.email||'—'} · Fraud=${schema.fraud||'—'}`;
+}
+
+function num(v){ const n=parseFloat(String(v??'').replace(/[$,]/g,'')); return Number.isFinite(n)?n:0; }
+function val(r,k){ return schema[k] ? String(r[schema[k]] ?? '').trim() : ''; }
+
+function analyze() {
+  if (!rows.length) return;
+  const threshold = num(document.getElementById('threshold').value) || 70;
+  const sharedWeight = num(document.getElementById('sharedWeight').value) || 25;
+  const amountWeight = num(document.getElementById('amountWeight').value) || 15;
+
+  const maps = {device:new Map(), ip:new Map(), email:new Map(), card:new Map()};
+  rows.forEach(r => {
+    for (const k of ['device','ip','email','card']) {
+      const v=val(r,k); if(!v) continue;
+      if(!maps[k].has(v)) maps[k].set(v,new Set());
+      const card=val(r,'card') || val(r,'tx') || ('ROW_'+Math.random());
+      maps[k].get(v).add(card);
+    }
+  });
+
+  const amounts = rows.map(r=>num(val(r,'amount'))).filter(x=>x>0).sort((a,b)=>a-b);
+  const p95 = amounts.length ? amounts[Math.floor(amounts.length*.95)] : 0;
+
+  processed = rows.map((r,i)=>{
+    let score=8, reasons=[];
+    for (const k of ['device','ip','email']) {
+      const v=val(r,k), count=v && maps[k].has(v) ? maps[k].get(v).size : 0;
+      if(count>=4){
+        const add=Math.min(sharedWeight, sharedWeight * Math.min(1,(count-3)/7));
+        score += add;
+        reasons.push(`shared ${k} linked to ${count} accounts`);
+      }
+    }
+    const amt=num(val(r,'amount'));
+    if(p95>0 && amt>=p95){ score += amountWeight; reasons.push(`high amount (${amt.toFixed(2)})`); }
+    const known=val(r,'fraud');
+    if(known==='1' || known.toLowerCase()==='true') { score += 35; reasons.push('known fraud label'); }
+    score=Math.min(99.5,score);
+    const action=score>=threshold ? 'REVIEW / BLOCK' : score>=50 ? 'REQUIRE MFA' : 'ALLOW';
+    return {r,i,score,action,reasons:reasons.length?reasons.join('; '):'no strong shared-entity anomaly'};
+  }).sort((a,b)=>b.score-a.score);
+
+  updateMetrics(threshold);
+  renderTable();
+  renderGraph(maps, threshold);
+}
+
+function updateMetrics(threshold){
+  const known=processed.filter(x=>val(x.r,'fraud')==='1' || val(x.r,'fraud').toLowerCase()==='true').length;
+  const flagged=processed.filter(x=>x.score>=threshold).length;
+  document.getElementById('totalTx').textContent=processed.length;
+  document.getElementById('knownFraud').textContent=known;
+  document.getElementById('flagged').textContent=flagged;
+  document.getElementById('fraudRatio').textContent=(processed.length?(known/processed.length*100):0).toFixed(2)+'%';
+  const ringCount = [...new Set(processed.filter(x=>x.score>=threshold).map(x=>val(x.r,'device')||val(x.r,'ip')||val(x.r,'email')).filter(Boolean))].length;
+  document.getElementById('rings').textContent=ringCount;
+}
+
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+function renderTable(){
+  const q=document.getElementById('search').value.toLowerCase();
+  const body=document.getElementById('tableBody');
+  body.innerHTML=processed.filter(x=>{
+    if(!q) return true;
+    return JSON.stringify(x.r).toLowerCase().includes(q);
+  }).slice(0,500).map(x=>{
+    const c=x.score>=70?'text-red-400':x.score>=50?'text-amber-400':'text-emerald-400';
+    const badge=x.action.includes('BLOCK')?'bg-red-900/50 text-red-300 border-red-700':x.action.includes('MFA')?'bg-amber-900/50 text-amber-300 border-amber-700':'bg-emerald-900/50 text-emerald-300 border-emerald-700';
+    return `<tr class="hover:bg-slate-800/70">
+      <td class="p-3 font-mono text-xs">${esc(val(x.r,'tx')||x.i)}</td>
+      <td class="p-3">${esc(val(x.r,'card')||'—')}</td>
+      <td class="p-3">${val(x.r,'amount')?num(val(x.r,'amount')).toFixed(2):'—'}</td>
+      <td class="p-3 text-xs text-slate-400">${esc(val(x.r,'device')||'—')}</td>
+      <td class="p-3 text-xs text-slate-400">${esc(val(x.r,'ip')||'—')}</td>
+      <td class="p-3 text-xs text-slate-400">${esc(val(x.r,'email')||'—')}</td>
+      <td class="p-3 font-bold ${c}">${x.score.toFixed(1)}</td>
+      <td class="p-3 text-xs text-slate-300 max-w-sm">${esc(x.reasons)}</td>
+      <td class="p-3"><span class="border px-2 py-1 rounded text-[10px] font-semibold ${badge}">${x.action}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderGraph(maps, threshold){
+  const nodes=[],edges=[],seen=new Set();
+  const addNode=(id,label,color,shape,size)=>{if(!seen.has(id)){nodes.push({id,label,color,shape,size,font:{color:'#fff',size:10}});seen.add(id)}};
+  const entity = (prefix,v)=>prefix+'::'+v;
+  const riskyCards=new Set(processed.filter(x=>x.score>=threshold).map(x=>val(x.r,'card')).filter(Boolean));
+  processed.slice(0,Math.min(1000,processed.length)).forEach(x=>{
+    const card=val(x.r,'card')||('TX_'+x.i);
+    addNode(entity('card',card),card,riskyCards.has(card)?'#ef4444':'#10b981','dot',riskyCards.has(card)?20:12);
+    for(const k of ['device','ip','email']){
+      const v=val(x.r,k); if(!v) continue;
+      const cnt=maps[k].get(v)?.size||1;
+      const color=k==='device'?(cnt>=4?'#f59e0b':'#64748b'):'#3b82f6';
+      const shape=k==='device'?'diamond':'square';
+      const id=entity(k,v);
+      addNode(id,`${v}\n(${cnt})`,color,shape,cnt>=4?22:14);
+      edges.push({from:entity('card',card),to:id,color:k==='device'?'#475569':'#1e40af'});
+    }
+  });
+  const container=document.getElementById('network-graph');
+  if(networkInstance) networkInstance.destroy();
+  networkInstance=new vis.Network(container,{nodes:new vis.DataSet(nodes),edges:new vis.DataSet(edges)},{
+    physics:{stabilization:{iterations:250},barnesHut:{gravitationalConstant:-2200,springLength:120}},
+    interaction:{hover:true,zoomView:true}
+  });
+}
+
+function loadFiles(files){
+  const arr=[...files].filter(f=>f.name.toLowerCase().endsWith('.csv'));
+  if(!arr.length) return;
+  document.getElementById('fileStatus').textContent='Reading '+arr.map(f=>f.name).join(', ')+'…';
+  let completed=0, all=[];
+  arr.forEach(file=>Papa.parse(file,{header:true,skipEmptyLines:true,dynamicTyping:false,
+    complete:res=>{
+      all=all.concat(res.data);
+      completed++;
+      if(completed===arr.length){
+        rows=all; inferSchema(rows);
+        document.getElementById('fileStatus').textContent=`Loaded ${rows.length.toLocaleString()} records from ${arr.length} file(s).`;
+        analyze();
+      }
+    },
+    error:err=>document.getElementById('fileStatus').textContent='CSV error: '+err.message
+  }));
+}
+
+function demo(){
+  const devices=['iPhone','Windows 10','Android','MacBook','Shared-Ring-Device'];
+  const domains=['gmail.com','yahoo.com','outlook.com','anonymous.com'];
+  rows=[];
+  for(let i=1;i<=180;i++){
+    const fraud=i>155?1:0, card='CARD_'+(1000+(i%35));
+    rows.push({TransactionID:2987000+i,card1:card,TransactionAmt:(fraud?220+Math.random()*500:15+Math.random()*150).toFixed(2),
+      DeviceInfo:fraud?'Shared-Ring-Device':devices[i%4],addr1:fraud?'10.20.30.40':`10.0.0.${i%30}`,
+      P_emaildomain:fraud?'anonymous.com':domains[i%3],isFraud:fraud});
+  }
+  inferSchema(rows); document.getElementById('fileStatus').textContent='Demo dataset loaded (180 synthetic records).'; analyze();
+}
+
+document.getElementById('fileInput').addEventListener('change',e=>loadFiles(e.target.files));
+document.getElementById('reanalyzeBtn').onclick=analyze;
+document.getElementById('demoBtn').onclick=demo;
+document.getElementById('search').addEventListener('input',renderTable);
+['threshold','sharedWeight','amountWeight'].forEach(id=>document.getElementById(id).addEventListener('change',analyze));
+const dz=document.getElementById('dropZone');
+['dragenter','dragover'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.add('drag')}));
+['dragleave','drop'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.remove('drag')}));
+dz.addEventListener('drop',ev=>loadFiles(ev.dataTransfer.files));
+demo();
+</script>
+</body>
+</html>
